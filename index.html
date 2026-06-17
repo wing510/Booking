@@ -326,6 +326,51 @@
     box-shadow: inset 0 0 0 1px var(--green-head);
   }
 
+  .batch-btn {
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 6px;
+    font-size: .8rem;
+    font-family: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .batch-btn:hover { background: var(--row-alt); }
+
+  .batch-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  .batch-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  body.batch-mode td:not(.cell-rest) input {
+    cursor: pointer;
+  }
+
+  thead th.head-date:not(.rest) {
+    cursor: pointer;
+  }
+
+  thead th.head-date.col-copy-active {
+    box-shadow: inset 0 0 0 2px #f59e0b;
+  }
+
+  body.column-paste-mode thead th.head-date:not(.rest) {
+    box-shadow: inset 0 0 0 2px var(--green-head);
+  }
+
+  td.cell-selected input {
+    background: #fef3c7 !important;
+    box-shadow: inset 0 0 0 2px #f59e0b;
+  }
+
   .save-hint {
     text-align: center;
     font-size: .75rem;
@@ -370,6 +415,8 @@
           <div class="date-display" id="rangeDisplay"></div>
           <button type="button" id="btnNext" title="下一段">›</button>
         </div>
+        <button type="button" class="batch-btn" id="btnBatch">批次</button>
+        <button type="button" class="batch-btn" id="btnBatchCopy" disabled>複製</button>
       </div>
     </div>
   </div>
@@ -381,7 +428,7 @@
     </table>
   </div>
 
-  <p class="save-hint" id="saveHint">長按姓名複製，再點其他格子貼上 · 資料自動儲存於本機瀏覽器</p>
+  <p class="save-hint" id="saveHint">長按複製單名 · 點日期表頭複製整欄 · 批次可多選 · 資料自動儲存於本機瀏覽器</p>
 </div>
 
 <script src="seed-data.js"></script>
@@ -402,16 +449,158 @@
   const yearDisplay = document.getElementById('yearDisplay');
   const modeTabs = document.getElementById('modeTabs');
   const saveHint = document.getElementById('saveHint');
+  const btnBatch = document.getElementById('btnBatch');
+  const btnBatchCopy = document.getElementById('btnBatchCopy');
 
   const today = startOfDay(new Date());
   let viewMode = '30days';
   let viewStart = new Date(today);
   let saveTimer = null;
   let allData = loadAll();
-  let copyBuffer = '';
+  let copyQueue = [];
+  let columnCopy = null;
+  let batchMode = false;
+  let selectedCells = new Set();
   let longPressTimer = null;
   let longPressed = false;
-  const DEFAULT_HINT = '長按姓名複製，再點其他格子貼上 · 資料自動儲存於本機瀏覽器';
+  const DEFAULT_HINT = '長按複製單名 · 點日期表頭複製整欄 · 批次可多選 · 資料自動儲存於本機瀏覽器';
+
+  function cellKey(day, time) {
+    return dateKey(day) + '|' + time;
+  }
+
+  function getHintText() {
+    if (copyQueue.length > 1) {
+      return `已複製 ${copyQueue.length} 個 · 依序點格子貼上（剩 ${copyQueue.length} 個）`;
+    }
+    if (copyQueue.length === 1) {
+      return `已複製「${copyQueue[0]}」· 點選其他格子貼上`;
+    }
+    return DEFAULT_HINT;
+  }
+
+  function clearCopyQueue() {
+    copyQueue = [];
+    document.body.classList.remove('paste-mode');
+  }
+
+  function clearColumnCopy() {
+    columnCopy = null;
+    document.body.classList.remove('column-paste-mode');
+    document.querySelectorAll('.col-copy-active').forEach(el => el.classList.remove('col-copy-active'));
+  }
+
+  function copyColumn(day) {
+    clearColumnCopy();
+    clearCopyQueue();
+    const dk = dateKey(day);
+    const dayData = getDayData(day);
+    const data = {};
+    SLOTS.forEach(time => {
+      const name = getName(dayData[time]).trim();
+      if (name) data[time] = name;
+    });
+    if (!Object.keys(data).length) {
+      showCopyHint('此日沒有預約可複製');
+      return;
+    }
+    columnCopy = { dk, data };
+    document.body.classList.add('column-paste-mode');
+    const label = `${day.getMonth() + 1}/${day.getDate()}`;
+    showCopyHint(`已複製 ${label} 共 ${Object.keys(data).length} 筆 · 點其他日期表頭貼上`);
+  }
+
+  function pasteColumn(day) {
+    if (!columnCopy) return;
+    if (isRestDay(day)) {
+      showCopyHint('休息日無法貼上');
+      return;
+    }
+    const dk = dateKey(day);
+    if (dk === columnCopy.dk) {
+      copyColumn(day);
+      return;
+    }
+    if (!allData[dk]) allData[dk] = {};
+    let count = 0;
+    SLOTS.forEach(time => {
+      if (columnCopy.data[time]) {
+        allData[dk][time] = columnCopy.data[time];
+        count++;
+      }
+    });
+    saveAll();
+    clearColumnCopy();
+    renderTable();
+    showCopyHint(`已貼上 ${count} 筆到 ${day.getMonth() + 1}/${day.getDate()}`);
+  }
+
+  function handleDateHeaderClick(day, th) {
+    if (isRestDay(day)) return;
+    if (columnCopy && dateKey(day) !== columnCopy.dk) {
+      pasteColumn(day);
+      return;
+    }
+    copyColumn(day);
+    th.classList.add('col-copy-active');
+  }
+
+  function updateBatchUI() {
+    btnBatch.classList.toggle('active', batchMode);
+    document.body.classList.toggle('batch-mode', batchMode);
+    btnBatchCopy.disabled = selectedCells.size === 0;
+    btnBatchCopy.textContent = selectedCells.size ? `複製(${selectedCells.size})` : '複製';
+    if (batchMode && selectedCells.size > 0) {
+      saveHint.textContent = `批次模式 · 已選 ${selectedCells.size} 格 · 點複製`;
+    } else if (!copyQueue.length) {
+      saveHint.textContent = batchMode ? '批次模式 · 點格子多選' : DEFAULT_HINT;
+    }
+  }
+
+  function toggleBatchMode() {
+    batchMode = !batchMode;
+    selectedCells.clear();
+    tbody.querySelectorAll('.cell-selected').forEach(el => el.classList.remove('cell-selected'));
+    if (!batchMode) clearCopyQueue();
+    else clearColumnCopy();
+    updateBatchUI();
+  }
+
+  function toggleCellSelect(td, key) {
+    if (selectedCells.has(key)) {
+      selectedCells.delete(key);
+      td.classList.remove('cell-selected');
+    } else {
+      selectedCells.add(key);
+      td.classList.add('cell-selected');
+    }
+    updateBatchUI();
+  }
+
+  function batchCopy() {
+    const entries = [...selectedCells].map(key => {
+      const sep = key.lastIndexOf('|');
+      const dk = key.slice(0, sep);
+      const time = key.slice(sep + 1);
+      return { dk, time, slotIdx: SLOTS.indexOf(time), key };
+    }).sort((a, b) => a.slotIdx - b.slotIdx || a.dk.localeCompare(b.dk));
+
+    const items = entries.map(({ dk, time }) => getName((allData[dk] || {})[time]).trim()).filter(Boolean);
+    if (!items.length) return;
+
+    copyQueue = items;
+    clearColumnCopy();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(items.join('\n')).catch(() => {});
+    }
+    document.body.classList.add('paste-mode');
+    batchMode = false;
+    selectedCells.clear();
+    tbody.querySelectorAll('.cell-selected').forEach(el => el.classList.remove('cell-selected'));
+    document.body.classList.remove('batch-mode');
+    btnBatch.classList.remove('active');
+    showCopyHint(`已複製 ${items.length} 個名字 · 依序點格子貼上`);
+  }
 
   function startOfDay(d) {
     const x = new Date(d);
@@ -444,9 +633,7 @@
     saveHint.classList.add('saved');
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      saveHint.textContent = copyBuffer
-        ? `已複製「${copyBuffer}」· 點選其他格子貼上`
-        : DEFAULT_HINT;
+      saveHint.textContent = getHintText();
       saveHint.classList.remove('saved');
     }, 2000);
   }
@@ -456,15 +643,14 @@
     saveHint.classList.add('saved');
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
-      saveHint.textContent = copyBuffer
-        ? `已複製「${copyBuffer}」· 點選其他格子貼上`
-        : DEFAULT_HINT;
+      saveHint.textContent = getHintText();
       saveHint.classList.remove('saved');
     }, 2500);
   }
 
   function copyName(name, td) {
-    copyBuffer = name;
+    clearColumnCopy();
+    copyQueue = [name];
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(name).catch(() => {});
     }
@@ -476,24 +662,35 @@
     }
   }
 
+  function applyNameToInput(input, day, time, name) {
+    input.value = name;
+    input.classList.toggle('is-booked', name !== '休息');
+    input.classList.toggle('is-rest-text', name === '休息');
+    persistSlot(day, time, name);
+  }
+
   function pasteName(input, day, time) {
-    input.value = copyBuffer;
-    input.classList.toggle('is-booked', copyBuffer !== '休息');
-    input.classList.toggle('is-rest-text', copyBuffer === '休息');
-    persistSlot(day, time, copyBuffer);
-    const pasted = copyBuffer;
-    copyBuffer = '';
-    document.body.classList.remove('paste-mode');
-    showCopyHint(`已貼上「${pasted}」`);
+    if (!copyQueue.length) return;
+    const name = copyQueue.shift();
+    applyNameToInput(input, day, time, name);
+    if (!copyQueue.length) document.body.classList.remove('paste-mode');
+    showCopyHint(
+      copyQueue.length
+        ? `已貼上「${name}」· 剩 ${copyQueue.length} 個`
+        : `已貼上「${name}」`
+    );
     input.blur();
   }
 
   function attachCopyPaste(td, input, day, time) {
+    const key = cellKey(day, time);
+
     function clearLongPress() {
       clearTimeout(longPressTimer);
     }
 
     function startLongPress() {
+      if (batchMode) return;
       longPressed = false;
       clearLongPress();
       longPressTimer = setTimeout(() => {
@@ -518,13 +715,19 @@
         longPressed = false;
         return;
       }
-      if (copyBuffer) {
+      if (batchMode) {
+        e.preventDefault();
+        toggleCellSelect(td, key);
+        return;
+      }
+      if (copyQueue.length) {
         e.preventDefault();
         pasteName(input, day, time);
       }
     });
 
     input.addEventListener('contextmenu', () => {
+      if (batchMode) return;
       const val = input.value.trim();
       if (val) copyName(val, td);
     });
@@ -737,6 +940,11 @@
       if (isRestDay(day)) th.classList.add('rest');
       const m = String(day.getMonth() + 1).padStart(2, '0');
       th.textContent = `${m}月${day.getDate()}日`;
+      if (!isRestDay(day)) {
+        th.title = '點一下複製此日整欄 · 再點其他日期貼上';
+        th.addEventListener('click', () => handleDateHeaderClick(day, th));
+      }
+      if (columnCopy && dateKey(day) === columnCopy.dk) th.classList.add('col-copy-active');
       rowDate.appendChild(th);
     });
     tableHead.appendChild(rowDate);
@@ -814,6 +1022,8 @@
 
   document.getElementById('btnPrev').addEventListener('click', navigatePrev);
   document.getElementById('btnNext').addEventListener('click', navigateNext);
+  btnBatch.addEventListener('click', toggleBatchMode);
+  btnBatchCopy.addEventListener('click', batchCopy);
 
   applySeedData();
   renderRangeHeader();
