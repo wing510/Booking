@@ -350,8 +350,19 @@
     cursor: not-allowed;
   }
 
-  body.batch-mode td:not(.cell-rest) input {
-    cursor: pointer;
+  body.batch-mode td[data-selectable] {
+    cursor: crosshair;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  body.batch-mode td[data-selectable] input {
+    pointer-events: none;
+    cursor: crosshair;
+  }
+
+  body.batch-mode.batch-dragging .table-wrap {
+    touch-action: none;
   }
 
   thead th.head-date:not(.rest) {
@@ -369,6 +380,58 @@
   td.cell-selected input {
     background: #fef3c7 !important;
     box-shadow: inset 0 0 0 2px #f59e0b;
+  }
+
+  .cell-menu-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: none;
+  }
+
+  .cell-menu-layer.visible {
+    display: block;
+  }
+
+  .cell-menu-backdrop {
+    position: absolute;
+    inset: 0;
+    background: transparent;
+  }
+
+  .cell-menu {
+    position: fixed;
+    min-width: 132px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .14);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .cell-menu button {
+    border: none;
+    background: transparent;
+    border-radius: 7px;
+    padding: 10px 14px;
+    font-size: .85rem;
+    font-family: inherit;
+    text-align: left;
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .cell-menu button:hover:not(:disabled),
+  .cell-menu button:active:not(:disabled) {
+    background: var(--row-alt);
+  }
+
+  .cell-menu button:disabled {
+    color: #bbb;
+    cursor: default;
   }
 
   .save-hint {
@@ -428,7 +491,16 @@
     </table>
   </div>
 
-  <p class="save-hint" id="saveHint">長按複製單名 · 點日期表頭複製整欄 · 批次可多選 · 資料自動儲存於本機瀏覽器</p>
+  <p class="save-hint" id="saveHint">長按格子或日期表頭開啟選單 · 批次可拖曳框選 · 資料自動儲存於本機瀏覽器</p>
+</div>
+
+<div class="cell-menu-layer" id="cellMenuLayer" aria-hidden="true">
+  <div class="cell-menu-backdrop" id="cellMenuBackdrop"></div>
+  <div class="cell-menu" id="cellMenu" role="menu">
+    <button type="button" data-action="copy" role="menuitem">複製</button>
+    <button type="button" data-action="paste" role="menuitem">貼上</button>
+    <button type="button" data-action="clear" role="menuitem">清除</button>
+  </div>
 </div>
 
 <script src="seed-data.js"></script>
@@ -451,6 +523,11 @@
   const saveHint = document.getElementById('saveHint');
   const btnBatch = document.getElementById('btnBatch');
   const btnBatchCopy = document.getElementById('btnBatchCopy');
+  const cellMenuLayer = document.getElementById('cellMenuLayer');
+  const cellMenuBackdrop = document.getElementById('cellMenuBackdrop');
+  const cellMenu = document.getElementById('cellMenu');
+  const cellMenuButtons = cellMenu.querySelectorAll('button[data-action]');
+  const tableWrap = document.querySelector('.table-wrap');
 
   const today = startOfDay(new Date());
   let viewMode = '30days';
@@ -463,18 +540,33 @@
   let selectedCells = new Set();
   let longPressTimer = null;
   let longPressed = false;
-  const DEFAULT_HINT = '長按複製單名 · 點日期表頭複製整欄 · 批次可多選 · 資料自動儲存於本機瀏覽器';
+  let menuTouch = { x: 0, y: 0 };
+  let cellMenuTarget = null;
+  let dragSelect = null;
+  const DEFAULT_HINT = '長按格子或日期表頭開啟選單 · 批次可拖曳框選 · 資料自動儲存於本機瀏覽器';
+
+  function getColumnDataCount(day) {
+    const dayData = getDayData(day);
+    let count = 0;
+    SLOTS.forEach(time => {
+      if (getName(dayData[time]).trim()) count++;
+    });
+    return count;
+  }
 
   function cellKey(day, time) {
     return dateKey(day) + '|' + time;
   }
 
   function getHintText() {
+    if (columnCopy) {
+      return '已複製整欄 · 長按其他日期表頭選貼上';
+    }
     if (copyQueue.length > 1) {
-      return `已複製 ${copyQueue.length} 個 · 依序點格子貼上（剩 ${copyQueue.length} 個）`;
+      return `已複製 ${copyQueue.length} 個 · 長按格子選貼上（剩 ${copyQueue.length} 個）`;
     }
     if (copyQueue.length === 1) {
-      return `已複製「${copyQueue[0]}」· 點選其他格子貼上`;
+      return `已複製「${copyQueue[0]}」· 長按其他格子選貼上`;
     }
     return DEFAULT_HINT;
   }
@@ -507,7 +599,19 @@
     columnCopy = { dk, data };
     document.body.classList.add('column-paste-mode');
     const label = `${day.getMonth() + 1}/${day.getDate()}`;
-    showCopyHint(`已複製 ${label} 共 ${Object.keys(data).length} 筆 · 點其他日期表頭貼上`);
+    showCopyHint(`已複製 ${label} 共 ${Object.keys(data).length} 筆 · 長按其他日期表頭選貼上`);
+  }
+
+  function clearColumn(day) {
+    const dk = dateKey(day);
+    if (!allData[dk]) return;
+    SLOTS.forEach(time => {
+      delete allData[dk][time];
+    });
+    if (Object.keys(allData[dk]).length === 0) delete allData[dk];
+    saveAll();
+    renderTable();
+    showCopyHint(`已清除 ${day.getMonth() + 1}/${day.getDate()} 整欄`);
   }
 
   function pasteColumn(day) {
@@ -535,16 +639,6 @@
     showCopyHint(`已貼上 ${count} 筆到 ${day.getMonth() + 1}/${day.getDate()}`);
   }
 
-  function handleDateHeaderClick(day, th) {
-    if (isRestDay(day)) return;
-    if (columnCopy && dateKey(day) !== columnCopy.dk) {
-      pasteColumn(day);
-      return;
-    }
-    copyColumn(day);
-    th.classList.add('col-copy-active');
-  }
-
   function updateBatchUI() {
     btnBatch.classList.toggle('active', batchMode);
     document.body.classList.toggle('batch-mode', batchMode);
@@ -553,39 +647,107 @@
     if (batchMode && selectedCells.size > 0) {
       saveHint.textContent = `批次模式 · 已選 ${selectedCells.size} 格 · 點複製`;
     } else if (!copyQueue.length) {
-      saveHint.textContent = batchMode ? '批次模式 · 點格子多選' : DEFAULT_HINT;
+      saveHint.textContent = batchMode ? '批次模式 · 拖曳框選格子' : DEFAULT_HINT;
     }
+  }
+
+  function endDragSelect() {
+    dragSelect = null;
+    document.body.classList.remove('batch-dragging');
+  }
+
+  function updateDragSelection() {
+    if (!dragSelect) return;
+    const minCol = Math.min(dragSelect.startCol, dragSelect.endCol);
+    const maxCol = Math.max(dragSelect.startCol, dragSelect.endCol);
+    const minRow = Math.min(dragSelect.startRow, dragSelect.endRow);
+    const maxRow = Math.max(dragSelect.startRow, dragSelect.endRow);
+    selectedCells.clear();
+    tbody.querySelectorAll('td[data-selectable]').forEach(td => {
+      const col = +td.dataset.col;
+      const row = +td.dataset.row;
+      const inRange = col >= minCol && col <= maxCol && row >= minRow && row <= maxRow;
+      td.classList.toggle('cell-selected', inRange);
+      if (inRange) selectedCells.add(td.dataset.key);
+    });
+    updateBatchUI();
+  }
+
+  function getSelectableTdFromPoint(x, y) {
+    const el = document.elementFromPoint(x, y);
+    return el ? el.closest('td[data-selectable]') : null;
+  }
+
+  function onBatchPointerDown(e) {
+    if (!batchMode || e.button !== 0) return;
+    const td = e.target.closest('td[data-selectable]');
+    if (!td) return;
+    e.preventDefault();
+    hideCellMenu();
+    dragSelect = {
+      pointerId: e.pointerId,
+      startCol: +td.dataset.col,
+      startRow: +td.dataset.row,
+      endCol: +td.dataset.col,
+      endRow: +td.dataset.row
+    };
+    document.body.classList.add('batch-dragging');
+    tbody.setPointerCapture(e.pointerId);
+    updateDragSelection();
+  }
+
+  function onBatchPointerMove(e) {
+    if (!batchMode || !dragSelect || e.pointerId !== dragSelect.pointerId) return;
+    e.preventDefault();
+    const td = getSelectableTdFromPoint(e.clientX, e.clientY);
+    if (td) {
+      dragSelect.endCol = +td.dataset.col;
+      dragSelect.endRow = +td.dataset.row;
+      updateDragSelection();
+    }
+  }
+
+  function onBatchPointerUp(e) {
+    if (!dragSelect || e.pointerId !== dragSelect.pointerId) return;
+    try { tbody.releasePointerCapture(e.pointerId); } catch (_) {}
+    endDragSelect();
+  }
+
+  function restoreBatchSelection() {
+    if (!batchMode) return;
+    tbody.querySelectorAll('td[data-selectable]').forEach(td => {
+      td.classList.toggle('cell-selected', selectedCells.has(td.dataset.key));
+    });
+    updateBatchUI();
   }
 
   function toggleBatchMode() {
     batchMode = !batchMode;
     selectedCells.clear();
+    endDragSelect();
     tbody.querySelectorAll('.cell-selected').forEach(el => el.classList.remove('cell-selected'));
     if (!batchMode) clearCopyQueue();
     else clearColumnCopy();
     updateBatchUI();
   }
 
-  function toggleCellSelect(td, key) {
-    if (selectedCells.has(key)) {
-      selectedCells.delete(key);
-      td.classList.remove('cell-selected');
-    } else {
-      selectedCells.add(key);
-      td.classList.add('cell-selected');
-    }
-    updateBatchUI();
-  }
-
   function batchCopy() {
-    const entries = [...selectedCells].map(key => {
+    const entries = [];
+    tbody.querySelectorAll('td.cell-selected[data-selectable]').forEach(td => {
+      const key = td.dataset.key;
       const sep = key.lastIndexOf('|');
-      const dk = key.slice(0, sep);
-      const time = key.slice(sep + 1);
-      return { dk, time, slotIdx: SLOTS.indexOf(time), key };
-    }).sort((a, b) => a.slotIdx - b.slotIdx || a.dk.localeCompare(b.dk));
+      entries.push({
+        row: +td.dataset.row,
+        col: +td.dataset.col,
+        dk: key.slice(0, sep),
+        time: key.slice(sep + 1)
+      });
+    });
+    entries.sort((a, b) => a.row - b.row || a.col - b.col);
 
-    const items = entries.map(({ dk, time }) => getName((allData[dk] || {})[time]).trim()).filter(Boolean);
+    const items = entries
+      .map(({ dk, time }) => getName((allData[dk] || {})[time]).trim())
+      .filter(Boolean);
     if (!items.length) return;
 
     copyQueue = items;
@@ -599,7 +761,101 @@
     tbody.querySelectorAll('.cell-selected').forEach(el => el.classList.remove('cell-selected'));
     document.body.classList.remove('batch-mode');
     btnBatch.classList.remove('active');
-    showCopyHint(`已複製 ${items.length} 個名字 · 依序點格子貼上`);
+    showCopyHint(`已複製 ${items.length} 個名字 · 長按格子選貼上`);
+  }
+
+  function hideCellMenu() {
+    cellMenuLayer.classList.remove('visible');
+    cellMenuLayer.setAttribute('aria-hidden', 'true');
+    cellMenuTarget = null;
+  }
+
+  function positionCellMenu(x, y) {
+    cellMenu.style.visibility = 'hidden';
+    cellMenu.style.left = '0';
+    cellMenu.style.top = '0';
+    const mw = cellMenu.offsetWidth;
+    const mh = cellMenu.offsetHeight;
+    let left = x - mw / 2;
+    let top = y - mh - 12;
+    if (top < 8) top = y + 12;
+    left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));
+    top = Math.max(8, Math.min(top, window.innerHeight - mh - 8));
+    cellMenu.style.left = `${left}px`;
+    cellMenu.style.top = `${top}px`;
+    cellMenu.style.visibility = '';
+  }
+
+  function updateCellMenuButtons() {
+    if (!cellMenuTarget) return;
+    if (cellMenuTarget.type === 'column') {
+      const { day } = cellMenuTarget;
+      const count = getColumnDataCount(day);
+      const canPaste = columnCopy && dateKey(day) !== columnCopy.dk;
+      cellMenuButtons.forEach(btn => {
+        const action = btn.dataset.action;
+        if (action === 'copy') btn.disabled = count === 0;
+        else if (action === 'paste') btn.disabled = !canPaste;
+        else if (action === 'clear') btn.disabled = count === 0;
+      });
+      return;
+    }
+    const val = cellMenuTarget.input.value.trim();
+    cellMenuButtons.forEach(btn => {
+      const action = btn.dataset.action;
+      if (action === 'copy') btn.disabled = !val;
+      else if (action === 'paste') btn.disabled = !copyQueue.length;
+      else if (action === 'clear') btn.disabled = !val;
+    });
+  }
+
+  function showCellMenu(x, y, ctx) {
+    cellMenuTarget = ctx;
+    updateCellMenuButtons();
+    cellMenuLayer.classList.add('visible');
+    cellMenuLayer.setAttribute('aria-hidden', 'false');
+    positionCellMenu(x, y);
+  }
+
+  function clearCell(input, day, time) {
+    applyNameToInput(input, day, time, '');
+    showCopyHint('已清除');
+    input.blur();
+  }
+
+  function handleCellMenuAction(action) {
+    if (!cellMenuTarget) return;
+    const target = cellMenuTarget;
+    hideCellMenu();
+    if (target.type === 'column') {
+      const { day, th } = target;
+      if (action === 'copy') {
+        copyColumn(day);
+        th.classList.add('col-copy-active');
+        return;
+      }
+      if (action === 'paste') {
+        pasteColumn(day);
+        return;
+      }
+      if (action === 'clear') {
+        clearColumn(day);
+      }
+      return;
+    }
+    const { td, input, day, time } = target;
+    if (action === 'copy') {
+      const val = input.value.trim();
+      if (val) copyName(val, td);
+      return;
+    }
+    if (action === 'paste') {
+      pasteName(input, day, time);
+      return;
+    }
+    if (action === 'clear') {
+      clearCell(input, day, time);
+    }
   }
 
   function startOfDay(d) {
@@ -655,7 +911,7 @@
       navigator.clipboard.writeText(name).catch(() => {});
     }
     document.body.classList.add('paste-mode');
-    showCopyHint(`已複製「${name}」· 點選其他格子貼上`);
+    showCopyHint(`已複製「${name}」· 長按其他格子選貼上`);
     if (td) {
       td.classList.add('cell-copied');
       setTimeout(() => td.classList.remove('cell-copied'), 800);
@@ -683,20 +939,33 @@
   }
 
   function attachCopyPaste(td, input, day, time) {
-    const key = cellKey(day, time);
-
     function clearLongPress() {
       clearTimeout(longPressTimer);
     }
 
-    function startLongPress() {
+    function openCellMenu(e) {
+      if (batchMode) return;
+      if (e.type === 'contextmenu') e.preventDefault();
+      const x = e.clientX ?? menuTouch.x;
+      const y = e.clientY ?? menuTouch.y;
+      showCellMenu(x, y, { type: 'cell', td, input, day, time });
+    }
+
+    function startLongPress(e) {
       if (batchMode) return;
       longPressed = false;
+      if (e.touches && e.touches[0]) {
+        menuTouch.x = e.touches[0].clientX;
+        menuTouch.y = e.touches[0].clientY;
+      } else if (e.clientX != null) {
+        menuTouch.x = e.clientX;
+        menuTouch.y = e.clientY;
+      }
       clearLongPress();
       longPressTimer = setTimeout(() => {
         longPressed = true;
-        const val = input.value.trim();
-        if (val) copyName(val, td);
+        if (navigator.vibrate) navigator.vibrate(10);
+        openCellMenu(e);
       }, 500);
     }
 
@@ -713,25 +982,71 @@
       if (longPressed) {
         e.preventDefault();
         longPressed = false;
-        return;
-      }
-      if (batchMode) {
-        e.preventDefault();
-        toggleCellSelect(td, key);
-        return;
-      }
-      if (copyQueue.length) {
-        e.preventDefault();
-        pasteName(input, day, time);
       }
     });
 
-    input.addEventListener('contextmenu', () => {
-      if (batchMode) return;
-      const val = input.value.trim();
-      if (val) copyName(val, td);
-    });
+    input.addEventListener('contextmenu', openCellMenu);
   }
+
+  function attachDateHeaderMenu(th, day) {
+    let headerPressTimer = null;
+    let headerLongPressed = false;
+
+    function clearPress() {
+      clearTimeout(headerPressTimer);
+    }
+
+    function openMenu(e) {
+      if (e.type === 'contextmenu') e.preventDefault();
+      const x = e.clientX ?? menuTouch.x;
+      const y = e.clientY ?? menuTouch.y;
+      showCellMenu(x, y, { type: 'column', day, th });
+    }
+
+    function startPress(e) {
+      headerLongPressed = false;
+      if (e.touches && e.touches[0]) {
+        menuTouch.x = e.touches[0].clientX;
+        menuTouch.y = e.touches[0].clientY;
+      } else if (e.clientX != null) {
+        menuTouch.x = e.clientX;
+        menuTouch.y = e.clientY;
+      }
+      clearPress();
+      headerPressTimer = setTimeout(() => {
+        headerLongPressed = true;
+        if (navigator.vibrate) navigator.vibrate(10);
+        openMenu(e);
+      }, 500);
+    }
+
+    th.addEventListener('touchstart', startPress, { passive: true });
+    th.addEventListener('touchend', clearPress);
+    th.addEventListener('touchmove', clearPress);
+    th.addEventListener('touchcancel', clearPress);
+    th.addEventListener('mousedown', startPress);
+    th.addEventListener('mouseup', clearPress);
+    th.addEventListener('mouseleave', clearPress);
+    th.addEventListener('click', e => {
+      if (headerLongPressed) {
+        e.preventDefault();
+        headerLongPressed = false;
+      }
+    });
+    th.addEventListener('contextmenu', openMenu);
+  }
+
+  cellMenuButtons.forEach(btn => {
+    btn.addEventListener('click', () => handleCellMenuAction(btn.dataset.action));
+  });
+  cellMenuBackdrop.addEventListener('click', hideCellMenu);
+  tableWrap.addEventListener('scroll', hideCellMenu, { passive: true });
+  window.addEventListener('resize', hideCellMenu);
+
+  tbody.addEventListener('pointerdown', onBatchPointerDown);
+  tbody.addEventListener('pointermove', onBatchPointerMove);
+  tbody.addEventListener('pointerup', onBatchPointerUp);
+  tbody.addEventListener('pointercancel', onBatchPointerUp);
 
   function formatTime(h, m) {
     return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
@@ -923,6 +1238,7 @@
   }
 
   function renderTable() {
+    hideCellMenu();
     const days = getViewDays();
 
     tableHead.innerHTML = '';
@@ -941,8 +1257,8 @@
       const m = String(day.getMonth() + 1).padStart(2, '0');
       th.textContent = `${m}月${day.getDate()}日`;
       if (!isRestDay(day)) {
-        th.title = '點一下複製此日整欄 · 再點其他日期貼上';
-        th.addEventListener('click', () => handleDateHeaderClick(day, th));
+        th.title = '長按開啟選單（整欄複製 / 貼上 / 清除）';
+        attachDateHeaderMenu(th, day);
       }
       if (columnCopy && dateKey(day) === columnCopy.dk) th.classList.add('col-copy-active');
       rowDate.appendChild(th);
@@ -972,7 +1288,7 @@
       tdTime.textContent = time;
       tr.appendChild(tdTime);
 
-      days.forEach(day => {
+      days.forEach((day, dayIndex) => {
         const dayData = getDayData(day);
         const name = getName(dayData[time]);
 
@@ -985,6 +1301,11 @@
           label.textContent = '休息';
           td.appendChild(label);
         } else {
+          const slotKey = cellKey(day, time);
+          td.dataset.selectable = '1';
+          td.dataset.col = String(dayIndex);
+          td.dataset.row = String(index);
+          td.dataset.key = slotKey;
           const input = document.createElement('input');
           input.type = 'text';
           input.placeholder = '姓名';
@@ -1004,6 +1325,7 @@
 
       tbody.appendChild(tr);
     });
+    restoreBatchSelection();
   }
 
   function renderRangeHeader() {
